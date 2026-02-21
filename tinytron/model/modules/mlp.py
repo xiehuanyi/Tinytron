@@ -15,10 +15,11 @@ from tinytron.utils import (
 
 class MLP(nn.Module):
     """Dense MLP or Single expert in MoE"""
-    def __init__(self, config: ModelConfig, use_moe: bool = False):
+    def __init__(self, config: ModelConfig, layer_idx: int, use_moe: bool = False):
         super().__init__()
         self.device = torch.cuda.current_device()
         self.config = config
+        self.layer_idx = layer_idx
         self.hidden_size = config.hidden_size
         self.intermediate_size = config.moe_intermediate_size if use_moe else config.intermediate_size
         self.use_moe = use_moe
@@ -27,17 +28,17 @@ class MLP(nn.Module):
         self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False, device=self.device)
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False, device=self.device)
         self.act_fn = nn.SiLU()
-        self._init_weights(config.seed)
+        self._init_weights(config.seed, layer_idx)
 
-    def _init_weights(self, base_seed: int):
+    def _init_weights(self, base_seed: int, layer_idx: int):
         with torch.random.fork_rng(devices=[self.gate_proj.weight.device]):
-            torch.manual_seed(base_seed)
+            torch.manual_seed(base_seed + layer_idx)
             torch.nn.init.normal_(self.gate_proj.weight, mean=0.0, std=self.config.init_std)
         with torch.random.fork_rng(devices=[self.up_proj.weight.device]):
-            torch.manual_seed(base_seed)
+            torch.manual_seed(base_seed + layer_idx)
             torch.nn.init.normal_(self.up_proj.weight, mean=0.0, std=self.config.init_std)
         with torch.random.fork_rng(devices=[self.down_proj.weight.device]):
-            torch.manual_seed(base_seed)
+            torch.manual_seed(base_seed + layer_idx)
             torch.nn.init.normal_(self.down_proj.weight, mean=0.0, std=self.config.init_std)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -45,10 +46,11 @@ class MLP(nn.Module):
 
 
 class MoE(nn.Module):
-    def __init__(self, config: ModelConfig, top_k: int | None = None):
+    def __init__(self, config: ModelConfig, layer_idx: int, top_k: int | None = None):
         super().__init__()
         self.device = torch.cuda.current_device()
         self.config = config
+        self.layer_idx = layer_idx
         self.num_experts = config.num_experts
         self.top_k = top_k if top_k is not None else config.num_experts_per_tok
         assert self.top_k <= self.num_experts, f"top_k must be less than or equal to num_experts, got {self.top_k} and {self.num_experts}"
@@ -72,16 +74,16 @@ class MoE(nn.Module):
         self.experts_up_weights = nn.Parameter(torch.empty(self.num_local_experts, self.intermediate_size, self.hidden_size, device=self.device))
         self.experts_down_weights = nn.Parameter(torch.empty(self.num_local_experts, self.hidden_size, self.intermediate_size, device=self.device))
         self.experts_act_fn = nn.SiLU()
-        self._init_expert_weights(config.seed)
+        self._init_expert_weights(config.seed, layer_idx)
     
-    def _init_expert_weights(self, base_seed: int):
+    def _init_expert_weights(self, base_seed: int, layer_idx: int):
         ep_rank = parallel_state.get_ep_rank()
         
         with torch.random.fork_rng(devices=[self.experts_gate_weights.device]):
             for local_idx in range(self.num_local_experts):
                 global_expert_idx = ep_rank * self.num_local_experts + local_idx
                 
-                expert_seed = base_seed + global_expert_idx
+                expert_seed = base_seed + layer_idx + global_expert_idx
                 torch.manual_seed(expert_seed)
                 
                 nn.init.normal_(self.experts_gate_weights[local_idx], mean=0.0, std=self.config.init_std)
@@ -89,7 +91,7 @@ class MoE(nn.Module):
                 nn.init.normal_(self.experts_down_weights[local_idx], mean=0.0, std=self.config.init_std)
 
         with torch.random.fork_rng(devices=[self.router.weight.device]):
-            torch.manual_seed(base_seed)
+            torch.manual_seed(base_seed + layer_idx)
             nn.init.normal_(self.router.weight, mean=0.0, std=self.config.init_std)
     
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:

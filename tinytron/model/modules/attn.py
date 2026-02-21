@@ -90,11 +90,12 @@ def gqa_impl(k: torch.Tensor, v: torch.Tensor, num_key_value_heads: int, num_att
 
 class Attention(nn.Module):
 
-    def __init__(self, config: ModelConfig):
+    def __init__(self, config: ModelConfig, layer_idx: int):
         super().__init__()
         assert config.hidden_size % config.num_attention_heads == 0
         self.device = torch.cuda.current_device()
         self.config = config
+        self.layer_idx = layer_idx
         self.num_attention_heads = config.num_attention_heads
         self.num_key_value_heads = config.num_key_value_heads
         self.head_dim = config.hidden_size // config.num_attention_heads
@@ -107,20 +108,20 @@ class Attention(nn.Module):
         self.v_proj = nn.Linear(config.hidden_size, config.num_key_value_heads * self.head_dim, bias=False, device=self.device)
         # output projection
         self.c_proj = nn.Linear(config.hidden_size, config.hidden_size, bias=False, device=self.device)
-        self._init_weights(config.seed)
+        self._init_weights(config.seed, layer_idx)
 
-    def _init_weights(self, base_seed: int):
+    def _init_weights(self, base_seed: int, layer_idx: int):
         with torch.random.fork_rng(devices=[self.q_proj.weight.device]):
-            torch.manual_seed(base_seed)
+            torch.manual_seed(base_seed + layer_idx)
             torch.nn.init.normal_(self.q_proj.weight, mean=0.0, std=self.config.init_std)
         with torch.random.fork_rng(devices=[self.k_proj.weight.device]):
-            torch.manual_seed(base_seed)
+            torch.manual_seed(base_seed + layer_idx)
             torch.nn.init.normal_(self.k_proj.weight, mean=0.0, std=self.config.init_std)
         with torch.random.fork_rng(devices=[self.v_proj.weight.device]):
-            torch.manual_seed(base_seed)
+            torch.manual_seed(base_seed + layer_idx)
             torch.nn.init.normal_(self.v_proj.weight, mean=0.0, std=self.config.init_std)
         with torch.random.fork_rng(devices=[self.c_proj.weight.device]):
-            torch.manual_seed(base_seed)
+            torch.manual_seed(base_seed + layer_idx)
             torch.nn.init.normal_(self.c_proj.weight, mean=0.0, std=self.config.init_std)
 
     def forward(self, x: torch.Tensor):

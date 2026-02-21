@@ -18,14 +18,16 @@ EXPERT_LOCAL_PARAM_SUFFIXES = (
 
 class Block(nn.Module):
 
-    def __init__(self, config: ModelConfig, use_moe: bool = True, top_k: int = None):
+    def __init__(self, config: ModelConfig, layer_idx: int, use_moe: bool = True, top_k: int = None):
         super().__init__()
+        self.config = config
+        self.layer_idx = layer_idx
         self.use_moe = use_moe
         self.device = torch.cuda.current_device()
         self.ln_1 = LayerNorm(config)
-        self.attn = Attention(config)
+        self.attn = Attention(config, layer_idx)
         self.ln_2 = LayerNorm(config)
-        self.mlp = MoE(config, top_k) if use_moe else MLP(config)
+        self.mlp = MoE(config, layer_idx, top_k) if use_moe else MLP(config, layer_idx)
 
     def forward(self, x: torch.Tensor):
         x = x + self.attn(self.ln_1(x))
@@ -44,7 +46,7 @@ class GPT(nn.Module):
         self.pos = None
         self.use_moe = config.use_moe
         self.wte = nn.Embedding(config.vocab_size, config.hidden_size, device=self.device)
-        self.blocks = nn.ModuleList([Block(config, self.use_moe) for layer in range(config.num_layer)])
+        self.blocks = nn.ModuleList([Block(config, layer_idx, self.use_moe) for layer_idx in range(config.num_layer)])
         self.lnf = LayerNorm(config)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False, device=self.device)
         if config.tied_lm_head:
