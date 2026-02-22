@@ -168,7 +168,7 @@ class Attention(nn.Module):
             y = y.view(B, H_local, sp_size, T_local, self.head_dim)
             y = y.permute(2, 0, 1, 3, 4).contiguous()   # [sp, B, H_local, T_local, D]
             y = ulysses_all_to_all(y, sp_group)
-            y = y.permute(1, 2, 0, 3, 4).contiguous()   # [B, H_local, sp, T_local, D]
+            y = y.permute(1, 0, 2, 3, 4).contiguous()   # [B, sp, H_local, T_local, D]
         y = y.view(B, H, T_local, self.head_dim)
 
         y = y.transpose(-2, -3).reshape(B, T_local, C)
