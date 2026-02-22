@@ -50,8 +50,8 @@ class Trainer:
             raise ValueError(f"warmup_steps must be < max_steps. Got warmup_steps={config.optim.warmup_steps}, max_steps={self.training_info['max_steps']}.")
         if self.master_process:
             print(f"The training process will train {self.training_info['epochs']} epochs, {self.training_info['max_steps']} steps.")
+            print(f"=> total tokens per step: {config.train.total_batch_size}")
             print(f"=> calculated gradient accumulation steps: {self.training_info['grad_accum_steps']}")
-            print(f"=> calculated tokens per step: {self.training_info['total_tokens_per_step']}")
         self._init_model(config)
         self._init_optimizer(config)
         self._init_logging(config)

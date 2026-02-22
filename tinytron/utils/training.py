@@ -11,8 +11,8 @@ def get_training_info(
     num_samples: int,
     tokens_per_sample: int,
     global_token_batch_size: int, 
-    samples_per_device_per_step: int, 
-    num_devices: int,
+    samples_per_dp_rank_per_micro_step: int, 
+    dp_world_size: int,
     max_steps=None,
     max_epochs=None,
 ) -> dict[str, Any]:
@@ -23,8 +23,8 @@ def get_training_info(
         num_samples (int): Total number of samples in the dataset.
         tokens_per_sample (int): Number of tokens in each sample.
         global_token_batch_size (int): Total number of tokens processed globally in each batch.
-        samples_per_device_per_step (int): Number of samples processed per device in each training step.
-        num_devices (int): Number of devices used for training.
+        samples_per_dp_rank_per_micro_step (int): Number of samples processed per dp rank in each training micro step.
+        dp_world_size (int): DP world size used for training.
         max_steps (int, optional): Maximum number of training steps.
         max_epochs (int, optional): Maximum number of epochs to train.
 
@@ -37,9 +37,9 @@ def get_training_info(
     if max_steps is None and max_epochs is None:
         raise ValueError("At least one of max_steps or max_epochs must be provided.")
 
-    tokens_per_device_per_step = tokens_per_sample * samples_per_device_per_step
-    total_tokens_per_step = tokens_per_device_per_step * num_devices
-    grad_accum_steps = int(global_token_batch_size / total_tokens_per_step)
+    tokens_per_dp_rank_per_step = tokens_per_sample * samples_per_dp_rank_per_micro_step
+    total_tokens_per_micro_step = tokens_per_dp_rank_per_step * dp_world_size
+    grad_accum_steps = int(global_token_batch_size / total_tokens_per_micro_step)
     total_tokens_in_dataset = num_samples * tokens_per_sample
 
     if max_steps is not None and max_epochs is not None:
@@ -60,7 +60,7 @@ def get_training_info(
         "epochs": max_epochs,
         "max_steps": max_steps,
         "grad_accum_steps": grad_accum_steps,
-        "total_tokens_per_step": total_tokens_per_step
+        "total_tokens_per_micro_step": total_tokens_per_micro_step
     }
 
 def set_seed(seed: int, deterministic: bool = False):
