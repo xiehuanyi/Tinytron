@@ -147,9 +147,9 @@ class Attention(nn.Module):
             H_local = H // sp_size
             qkv = torch.stack([q, k, v], dim=0)
             qkv = qkv.reshape(3, B, sp_size, H_local, T_local, self.head_dim)
-            qkv = qkv.transpose(0, 2).contiguous()
+            qkv = qkv.permute(2, 1, 0, 3, 4, 5).contiguous()    # [sp, B, 3, H_local, T_local, D]
             qkv = ulysses_all_to_all(qkv, sp_group)
-            qkv = qkv.transpose(0, 2).contiguous()
+            qkv = qkv.permute(2, 1, 3, 0, 4, 5).contiguous()    # [3, B, H_local, sp, T_local, D]
             T_full = sp_size * T_local
             qkv = qkv.view(3, B, H_local, T_full, self.head_dim)
             q_local, k_local, v_local = qkv[0], qkv[1], qkv[2]
