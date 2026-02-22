@@ -158,7 +158,7 @@ def print_model_parallel_topology(
       1) Static layout table derived from current world_size/sep_size
       2) Static group membership (SEP / DP)
       3) Dynamic per-rank info gathered from all ranks:
-         - rank, sp_rank, dp_rank, inferred sep_group_id(data_replica_id)
+         - rank, sep_rank, dp_rank, inferred sep_group_id(data_replica_id)
          - actual sep_members / dp_members from current process view
 
     Notes:
@@ -184,8 +184,8 @@ def print_model_parallel_topology(
         group_for_gather = get_dp_sp_group()
 
     # ---- local runtime info (dynamic) ----
-    sp_rank = get_sp_rank()
-    sp_world_size = get_sp_world_size()
+    sep_rank = get_sep_rank()
+    sep_world_size = get_sep_world_size()
     dp_rank = get_dp_rank()
     dp_world_size = get_dp_world_size()
 
@@ -194,15 +194,15 @@ def print_model_parallel_topology(
     dp_group_id = _get_dp_group_id_from_layout(rank, sep_size)
 
     # actual members as seen from this process
-    sep_members = [get_sep_global_rank(i) for i in range(sp_world_size)]
+    sep_members = [get_sep_global_rank(i) for i in range(sep_world_size)]
     dp_members = [get_dp_global_rank(i) for i in range(dp_world_size)]
 
     # pack into a fixed-size tensor for all_gather
     # fields:
     # [0] rank
     # [1] sep_group_id (= data_replica_id)
-    # [2] sp_rank
-    # [3] sp_world_size
+    # [2] sep_rank
+    # [3] sep_world_size
     # [4] dp_group_id
     # [5] dp_rank
     # [6] dp_world_size
@@ -218,8 +218,8 @@ def print_model_parallel_topology(
 
     payload[0] = rank
     payload[1] = sep_group_id
-    payload[2] = sp_rank
-    payload[3] = sp_world_size
+    payload[2] = sep_rank
+    payload[3] = sep_world_size
     payload[4] = dp_group_id
     payload[5] = dp_rank
     payload[6] = dp_world_size
@@ -249,7 +249,7 @@ def print_model_parallel_topology(
         # 1) Static topology table
         print("\n[Static Rank Mapping]", flush=flush)
         print(
-            f"{'global':>6} | {'sep_gid(data_rep)':>16} | {'sp_rank':>7} | "
+            f"{'global':>6} | {'sep_gid(data_rep)':>16} | {'sep_rank':>7} | "
             f"{'dp_gid':>6} | {'dp_rank':>7}",
             flush=flush,
         )
@@ -265,12 +265,12 @@ def print_model_parallel_topology(
             )
 
         # 2) Grid view
-        print("\n[Grid View] rows=SEP groups(data replicas), cols=SP ranks", flush=flush)
-        header = "        " + " ".join([f"sp{j:>4}" for j in range(sep_size)])
+        print("\n[Grid View] rows=SEP groups(data replicas), cols=SEP ranks", flush=flush)
+        header = "        " + " ".join([f"sep{j:>4}" for j in range(sep_size)])
         print(header, flush=flush)
         print("        " + "------" * sep_size, flush=flush)
         for sep_gid in range(dp_size):
-            row = [sep_gid * sep_size + sp for sp in range(sep_size)]
+            row = [sep_gid * sep_size + sep for sep in range(sep_size)]
             cells = " ".join([f"{r:>5}" for r in row])
             print(f"SEP[{sep_gid:>2}] | {cells}", flush=flush)
 
@@ -289,7 +289,7 @@ def print_model_parallel_topology(
         # 4) Dynamic per-rank info (real process-group view)
         print("\n[Dynamic Per-Rank View (gathered)]", flush=flush)
         print(
-            f"{'rank':>4} | {'sep_gid':>7} | {'sp_r':>4}/{ 'sp_ws':<4} | "
+            f"{'rank':>4} | {'sep_gid':>7} | {'sep_r':>4}/{ 'sep_ws':<4} | "
             f"{'dp_gid':>6} | {'dp_r':>4}/{ 'dp_ws':<4} | {'sep_members':>16} | {'dp_members':>16}",
             flush=flush,
         )
@@ -322,11 +322,11 @@ def print_model_parallel_topology(
         print("\n[Interpretation]", flush=flush)
         print(
             "- Each SEP group (row) is one data replica: ranks in the same SEP group should receive the SAME batch "
-            "before sequence slicing by sp_rank.",
+            "before sequence slicing by sep_rank.",
             flush=flush,
         )
         print(
-            "- Each DP group (column) synchronizes dense (non-expert) gradients across replicas for the same sp offset.",
+            "- Each DP group (column) synchronizes dense (non-expert) gradients across replicas for the same sep offset.",
             flush=flush,
         )
         print(
