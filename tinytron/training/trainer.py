@@ -77,6 +77,7 @@ class Trainer:
         self.dp_sp_group = parallel_state.get_dp_sp_group()
         self.dp_sp_rank = parallel_state.get_dp_sp_rank()
         self.dp_sp_world_size = parallel_state.get_dp_sp_world_size()
+        parallel_state.print_model_parallel_topology(self.master_process, tag="Init Distributed Topology")
 
     def _init_dataset(self, config: Config):
         if config.data.use_mock_data:
