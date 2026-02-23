@@ -8,10 +8,6 @@ from tinytron.distributed import (
     parallel_state,
     ep_all_to_all,
 )
-from tinytron.utils import (
-    torch_version_ge,
-    sm_ge,
-)
 
 class MLP(nn.Module):
     """Dense MLP or Single expert in MoE"""
@@ -59,10 +55,12 @@ class MoE(nn.Module):
         self.grouped_gemm_supported = (
             torch.cuda.is_available()
             and torch.version.cuda is not None
-            and torch_version_ge()
-            and sm_ge(self.device)
             and hasattr(F, "grouped_mm")
+            and torch.cuda.get_device_capability(self.device)[0] >= 8.0
         )
+        if not self.grouped_gemm_supported and self.layer_idx == 0 and dist.get_rank() == 0:
+            print(f"⚠️ [Performance Warning] torch.nn.functional.grouped_mm is NOT supported or hardware requirements (SM >= 8.0) are not met."
+                  f"MoE will fallback to the padded batched matmul loop (Slow Path).")
 
         self.router = nn.Linear(self.hidden_size, self.num_experts, bias=False, device=self.device)
 
@@ -109,11 +107,10 @@ class MoE(nn.Module):
         global_sort_idx = torch.argsort(target_ep_ranks)
         sorted_x = flat_x[global_sort_idx].contiguous()
         sorted_experts = selected_experts[global_sort_idx].contiguous()
-        send_splits = torch.bincount(target_ep_ranks, minlength=ep_world_size).tolist()
-        send_splits_tensor = torch.tensor(send_splits, dtype=torch.long, device=x.device)
+        send_splits_tensor = torch.bincount(target_ep_ranks, minlength=ep_world_size)
         recv_splits_tensor = torch.empty_like(send_splits_tensor)
         dist.all_to_all_single(recv_splits_tensor, send_splits_tensor, group=ep_group)
-        recv_splits = recv_splits_tensor.tolist()
+        send_splits, recv_splits = torch.stack([send_splits_tensor, recv_splits_tensor]).cpu().tolist()
         received_x = ep_all_to_all(sorted_x, send_splits, recv_splits, ep_group)
         received_experts = torch.empty(sum(recv_splits), dtype=sorted_experts.dtype, device=x.device)
         dist.all_to_all_single(
@@ -132,7 +129,7 @@ class MoE(nn.Module):
             up_out = F.grouped_mm(local_x, self.experts_up_weights, offs=offs)
             act_out = self.experts_act_fn(gate_out) * up_out
             down_out = F.grouped_mm(act_out, self.experts_down_weights, offs=offs)
-        else:
+        else:   # slow
             max_tokens = counts.max().item()
             if max_tokens == 0:
                 # down_out = torch.empty_like(local_x)  # will break autograd graph, change to the following code
