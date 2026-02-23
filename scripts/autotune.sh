@@ -9,6 +9,8 @@ TARGET_STEPS=${TARGET_STEPS:-100}
 WARMUP_STEPS=${WARMUP_STEPS:-20}
 RUN_SCRIPT=${RUN_SCRIPT:-"scripts/debug_gpt_0.25b/pretrain.sh"}
 
+SEP_SIZES=($SEP_SIZES_STR)
+BATCH_SIZES=($BATCH_SIZES_STR)
 echo "======================================================"
 echo "⚙️  Auto-Tune Configuration:"
 echo "   SEP_SIZES    : ${SEP_SIZES[*]}"
@@ -18,8 +20,6 @@ echo "   WARMUP_STEPS : $WARMUP_STEPS"
 echo "   RUN_SCRIPT   : $RUN_SCRIPT"
 echo "======================================================"
 
-SEP_SIZES=($SEP_SIZES_STR)
-BATCH_SIZES=($BATCH_SIZES_STR)
 LOG_FILE="autotune_temp.log"
 RESULTS_FILE="autotune_results.csv"
 
