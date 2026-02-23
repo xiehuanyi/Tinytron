@@ -77,6 +77,8 @@ def _add_data_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
 
 def _add_optim_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     g = parser.add_argument_group("optimizer")
+    g.add_argument("--optimizer", type=str, default="adam")
+
     g.add_argument("--max_lr", type=float, default=4e-3)
     g.add_argument("--min_lr", type=float, default=3e-5)
     g.add_argument("--warmup_steps", type=int, default=1000)
@@ -86,6 +88,9 @@ def _add_optim_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     g.add_argument("--adam_beta1", type=float, default=0.9)
     g.add_argument("--adam_beta2", type=float, default=0.95)
     g.add_argument("--adam_eps", type=float, default=1e-8)
+
+    # Muon
+    g.add_argument("--muon_momentum", type=float, default=0.95)
     return parser
 
 
