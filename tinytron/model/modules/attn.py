@@ -137,29 +137,38 @@ class Attention(nn.Module):
         if sp_size > 1:
             # sp all to all
             assert H % sp_size == 0, f"Attention heads ({H}) must be divisible by sp_size ({sp_size})"
-            assert self.num_key_value_heads % sp_size == 0, f"KV heads ({self.num_key_value_heads}) must be divisible by sp_size ({sp_size})"
             H_local = H // sp_size
-            H_kv_local = self.num_key_value_heads // sp_size
             T_full = sp_size * T_local
+            if self.num_key_value_heads % sp_size == 0:
+                H_kv_local = self.num_key_value_heads // sp_size
+                q = q.view(B, sp_size, H_local, T_local, self.head_dim)
+                q = q.permute(1, 0, 2, 3, 4).contiguous()   # [sp, B, H_local, T_local, D]
+                q = ulysses_all_to_all(q, sp_group)
+                q = q.permute(1, 2, 0, 3, 4).contiguous()   # [B, H_local, sp, T_local, D]
+                q_local = q.view(B, H_local, T_full, self.head_dim)
 
-            q = q.view(B, sp_size, H_local, T_local, self.head_dim)
-            q = q.permute(1, 0, 2, 3, 4).contiguous()   # [sp, B, H_local, T_local, D]
-            q = ulysses_all_to_all(q, sp_group)
-            q = q.permute(1, 2, 0, 3, 4).contiguous()   # [B, H_local, sp, T_local, D]
-            q_local = q.view(B, H_local, T_full, self.head_dim)
-
-            kv = torch.stack([k, v], dim=0)
-            kv = kv.view(2, B, sp_size, H_kv_local, T_local, self.head_dim)
-            kv = kv.permute(2, 0, 1, 3, 4, 5).contiguous()  # [sp, 2, B, H_kv_local, T_local, D]
-            kv = ulysses_all_to_all(kv, sp_group)
-            kv = kv.permute(1, 2, 3, 0, 4, 5).contiguous()  # [2, B, H_kv_local, sp, T_local, D]
-            kv = kv.view(2, B, H_kv_local, T_full, self.head_dim)
-            k_local, v_local = kv[0], kv[1]
+                kv = torch.stack([k, v], dim=0)
+                kv = kv.view(2, B, sp_size, H_kv_local, T_local, self.head_dim)
+                kv = kv.permute(2, 0, 1, 3, 4, 5).contiguous()  # [sp, 2, B, H_kv_local, T_local, D]
+                kv = ulysses_all_to_all(kv, sp_group)
+                kv = kv.permute(1, 2, 3, 0, 4, 5).contiguous()  # [2, B, H_kv_local, sp, T_local, D]
+                kv = kv.view(2, B, H_kv_local, T_full, self.head_dim)
+                k_local, v_local = kv[0], kv[1]
+                k_local, v_local = gqa_impl(k_local, v_local, H_kv_local, H_local)
+            else:
+                k, v = gqa_impl(k, v, self.num_key_value_heads, H)
+                qkv = torch.stack([q, k, v], dim=0)
+                qkv = qkv.view(3, B, sp_size, H_local, T_local, self.head_dim)
+                qkv = qkv.permute(2, 0, 1, 3, 4, 5).contiguous()  # [sp, 3, B, H_local, T_local, D]
+                qkv = ulysses_all_to_all(qkv, sp_group)
+                qkv = qkv.permute(1, 2, 3, 0, 4, 5).contiguous()  # [3, B, H_local, sp, T_local, D]
+                qkv = qkv.view(3, B, H_local, T_full, self.head_dim)
+                q_local, k_local, v_local = qkv[0], qkv[1], qkv[2]
         else:
             H_local = H
             H_kv_local = self.num_key_value_heads
             q_local, k_local, v_local = q, k, v
-        k_local, v_local = gqa_impl(k_local, v_local, H_kv_local, H_local)
+            k_local, v_local = gqa_impl(k_local, v_local, H_kv_local, H_local)
 
         # local attention computation
         dropout_p = self.dropout if self.training else 0.0
