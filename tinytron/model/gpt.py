@@ -7,7 +7,7 @@ from tinytron.training.config import ModelConfig
 from .modules.attn import Attention
 from .modules.mlp import MLP, MoE
 from .modules.norm import LayerNorm
-from .modules.loss import CrossEntropyLoss
+from .modules.loss import CrossEntropyLoss, ExpertLoadBalancingLoss
 from tinytron.distributed import parallel_state
 
 EXPERT_LOCAL_PARAM_SUFFIXES = (
@@ -33,7 +33,7 @@ class Block(nn.Module):
         x = x + self.attn(self.ln_1(x))
         mlp_out = self.mlp(self.ln_2(x))
         x = x + mlp_out[0] if self.use_moe else x + mlp_out
-        return x
+        return x, mlp_out[1] if self.use_moe else x, None
 
 # GPT-like Model
 
@@ -52,6 +52,7 @@ class GPT(nn.Module):
         if config.tied_lm_head:
             self.lm_head.weight = self.wte.weight
         self.loss_fn = CrossEntropyLoss()
+        self.expert_loss_fn = ExpertLoadBalancingLoss(config.num_experts, config.num_experts_per_tok)
         self._init_weights(config.seed)
 
     def _init_weights(self, base_seed: int):
@@ -67,12 +68,14 @@ class GPT(nn.Module):
         B, T = idx.size()
         assert T <= self.config.block_size, f"Cannot forward sequence of length {T}, block size is only {self.config.block_size}"
         x = self.wte(idx) # token embeddings of shape (B, T, n_embd)
+        total_aux_loss = 0.0
         for block in self.blocks:
-            x = block(x)
+            x, gate_logits = block(x)
+            total_aux_loss += self.expert_loss_fn(gate_logits)
         x = self.lnf(x)
         logits = self.lm_head(x) # (B, T, vocab_size)
         loss, logging_loss = self.loss_fn(logits, targets)
-        return logits, loss, logging_loss
+        return logits, loss + total_aux_loss, logging_loss
     
     def get_flops_per_fwd_bwd(self, batch_size, seq_len):
         """
