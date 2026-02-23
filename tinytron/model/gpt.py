@@ -1,6 +1,7 @@
 import math
 import torch
 import torch.nn as nn
+import torch.distributed as dist
 from torch.nn import functional as F
 
 from tinytron.training.config import ModelConfig
@@ -64,7 +65,7 @@ class GPT(nn.Module):
                 torch.manual_seed(base_seed)
                 torch.nn.init.normal_(self.lm_head.weight, mean=0.0, std=self.config.init_std)
 
-    def forward(self, idx: torch.Tensor, targets: torch.Tensor):
+    def forward(self, idx: torch.Tensor, targets: torch.Tensor = None):
         B, T = idx.size()
         assert T <= self.config.block_size, f"Cannot forward sequence of length {T}, block size is only {self.config.block_size}"
         x = self.wte(idx) # token embeddings of shape (B, T, n_embd)
@@ -74,8 +75,11 @@ class GPT(nn.Module):
             total_aux_loss += self.expert_loss_fn(gate_logits)
         x = self.lnf(x)
         logits = self.lm_head(x) # (B, T, vocab_size)
-        loss, logging_loss = self.loss_fn(logits, targets)
-        return logits, loss + total_aux_loss, logging_loss
+        if targets is not None:
+            loss, logging_loss = self.loss_fn(logits, targets)
+            return logits, loss + total_aux_loss, logging_loss
+        else:
+            return logits
     
     def get_flops_per_fwd_bwd(self, batch_size, seq_len):
         """
@@ -102,3 +106,23 @@ class GPT(nn.Module):
             per_layer_flops = (attn_flops + ffn_flops) / sp_size    # total FLOPs
         total_flops = 3 * self.config.num_layer * per_layer_flops  # fwd + bwd ≈ 3 × fwd FLOPs
         return total_flops
+    
+    def clip_grad_norm(self, max_norm: float, norm_type: float = 2):
+        normal_sq_sum = torch.tensor(0.0, dtype=torch.float32, device=self.device)
+        expert_sq_sum = torch.tensor(0.0, dtype=torch.float32, device=self.device)
+        for name, p in self.named_parameters():
+            if p.grad is None:
+                continue
+            param_norm_sq = torch.linalg.vector_norm(p.grad, norm_type).to(torch.float32) ** norm_type
+            if name.endswith(EXPERT_LOCAL_PARAM_SUFFIXES):
+                expert_sq_sum += param_norm_sq
+            else:
+                normal_sq_sum += param_norm_sq
+        dist.all_reduce(expert_sq_sum, op=dist.ReduceOp.SUM, group=parallel_state.get_ep_group())
+        total_sq_sum = normal_sq_sum + expert_sq_sum
+        total_norm = total_sq_sum ** (1.0 / norm_type)
+        clip_coef = max_norm / (total_norm + 1e-6)
+        clip_coef_clamped = torch.clamp(clip_coef, max=1.0)
+        for p in self.parameters():
+            p.grad.detach().mul_(clip_coef_clamped)
+        return total_norm

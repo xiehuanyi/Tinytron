@@ -286,7 +286,7 @@ class Trainer:
             sp_world_size=self.sp_world_size,
             expert_local_param_suffixes=EXPERT_LOCAL_PARAM_SUFFIXES,
         )
-        norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), config.train.grad_clip_value)
+        norm = self.raw_model.clip_grad_norm(config.train.grad_clip_value)
         lr = self._lr_scheduler(step, self.training_info["max_steps"], config.optim.warmup_steps, config.optim.max_lr, config.optim.min_lr)
         for param_group in self.optimizer.param_groups:
             param_group['lr'] = lr
