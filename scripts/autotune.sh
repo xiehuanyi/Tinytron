@@ -13,6 +13,7 @@ DEBUG=${DEBUG:-0}
 
 SEP_SIZES=($SEP_SIZES_STR)
 BATCH_SIZES=($BATCH_SIZES_STR)
+TOTAL_REQUIRED_STEPS=$((TARGET_STEPS + WARMUP_STEPS))
 echo "======================================================"
 echo "⚙️  Auto-Tune Configuration:"
 echo "   SEP_SIZES    : ${SEP_SIZES[*]}"
@@ -28,7 +29,7 @@ RESULTS_FILE="autotune_results.csv"
 echo "SEP_SIZE,BATCH_SIZE,AVG_TOK_SEC,STATUS" > $RESULTS_FILE
 echo -e "\n🔥 Starting Auto-Tune: Target Steps = $TARGET_STEPS (Warmup = $WARMUP_STEPS)...\n"
 
-trap 'echo "🚨 Interrupted! Cleaning up..."; pkill -f pretrain_example.py; rm -f $LOG_FILE; exit 1' INT
+trap 'echo "🚨 Interrupted! Cleaning up..."; pkill -f pretrain_example.py; [ -n "$TAIL_PID" ] && kill $TAIL_PID 2>/dev/null; rm -f $LOG_FILE; exit 1' INT
 
 best_tok_sec=0
 best_config=""
@@ -68,13 +69,25 @@ for sp in "${SEP_SIZES[@]}"; do
                 if grep -qiE "error|traceback" $LOG_FILE && ! grep -qiE "out of memory" $LOG_FILE; then
                      STATUS="ERROR"
                      echo "❌ Failed: Script crashed (See $LOG_FILE for details)."
+                     if [ "$DEBUG" -eq 0 ]; then
+                         echo "Last 10 lines of log:"
+                         tail -n 10 $LOG_FILE
+                     fi
+                else
+                    if [ "$STEP_COUNT" -le "$WARMUP_STEPS" ]; then
+                         STATUS="INSUFFICIENT_STEPS"
+                         echo -e "\n❌ Failed: Script exited early. Only got $STEP_COUNT steps (needed > $WARMUP_STEPS for warmup)."
+                     else
+                         STATUS="SUCCESS"
+                         echo -e "\n⚠️ Warning: Script finished early at step $STEP_COUNT, but gathered enough valid data."
+                     fi
                 fi
                 break
             fi
 
             STEP_COUNT=$(grep -c "tok/sec:" $LOG_FILE)
             
-            if [ "$STEP_COUNT" -ge "$TARGET_STEPS" ]; then
+            if [ "$STEP_COUNT" -ge "$TOTAL_REQUIRED_STEPS" ]; then
                 STATUS="SUCCESS"
                 echo "✅ Gathered enough steps ($TARGET_STEPS). Terminating run..."
                 pkill -P $RUN_PID 2>/dev/null || kill -9 $RUN_PID 2>/dev/null
@@ -84,6 +97,10 @@ for sp in "${SEP_SIZES[@]}"; do
             
             sleep 2
         done
+
+        if [ -n "$TAIL_PID" ]; then
+            kill $TAIL_PID 2>/dev/null
+        fi
 
         if [ "$STATUS" == "SUCCESS" ]; then
             avg_tok_sec=$(grep "tok/sec:" $LOG_FILE | \
