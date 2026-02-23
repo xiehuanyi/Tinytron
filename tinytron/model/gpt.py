@@ -34,7 +34,7 @@ class Block(nn.Module):
         x = x + self.attn(self.ln_1(x))
         mlp_out = self.mlp(self.ln_2(x))
         x = x + mlp_out[0] if self.use_moe else x + mlp_out
-        return x, mlp_out[1] if self.use_moe else x, None
+        return (x, mlp_out[1]) if self.use_moe else (x, None)
 
 # GPT-like Model
 
