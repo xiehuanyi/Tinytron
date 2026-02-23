@@ -72,7 +72,8 @@ class GPT(nn.Module):
         total_aux_loss = 0.0
         for block in self.blocks:
             x, gate_logits = block(x)
-            total_aux_loss += self.expert_loss_fn(gate_logits)
+            if gate_logits is not None:
+                total_aux_loss += self.expert_loss_fn(gate_logits)
         x = self.lnf(x)
         logits = self.lm_head(x) # (B, T, vocab_size)
         if targets is not None:
