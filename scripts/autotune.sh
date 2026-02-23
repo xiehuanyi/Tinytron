@@ -9,6 +9,8 @@ TARGET_STEPS=${TARGET_STEPS:-100}
 WARMUP_STEPS=${WARMUP_STEPS:-20}
 RUN_SCRIPT=${RUN_SCRIPT:-"scripts/debug_gpt_0.25b/pretrain.sh"}
 
+DEBUG=${DEBUG:-0}
+
 SEP_SIZES=($SEP_SIZES_STR)
 BATCH_SIZES=($BATCH_SIZES_STR)
 echo "======================================================"
@@ -42,6 +44,13 @@ for sp in "${SEP_SIZES[@]}"; do
         export BATCH_SIZE=$bs
         bash $RUN_SCRIPT > $LOG_FILE 2>&1 &
         RUN_PID=$!
+
+        TAIL_PID=""
+        if [ "$DEBUG" -eq 1 ]; then
+            echo "🐛 [DEBUG MODE] Streaming logs..."
+            tail -f $LOG_FILE &
+            TAIL_PID=$!
+        fi
 
         STEP_COUNT=0
         STATUS="RUNNING"
