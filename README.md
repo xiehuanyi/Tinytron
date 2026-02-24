@@ -25,6 +25,7 @@ A minimal, hackable pre-training stack for GPT-style language models. This proje
 - **Developer-Friendly**:
   - Comprehensive profiling utilities
   - Model FLOPs Utilization (MFU) tracking
+  - Auto-tune script for fast throughput search (`scripts/autotune.sh`)
   - Mock data mode for rapid debugging
   - Minimal dependencies
 
@@ -66,6 +67,7 @@ A minimal, hackable pre-training stack for GPT-style language models. This proje
 │       └── profile.py                      # Profiling and MFU computation
 │
 ├── scripts/                                # Launch scripts
+│   ├── autotune.sh                         # Auto-tune SEP_SIZE/BATCH_SIZE by tok/sec
 │   ├── debug_gpt_0.25b/
 │   │   └── pretrain.sh                     # 0.25B debug (pretrain_debug.py)
 │   ├── debug_gpt_0.3b_a0.17b/
@@ -412,9 +414,10 @@ Example:
 
 1. **Enable compilation**: Add `--use_compile` for PyTorch 2.0+ (20-30% speedup)
 2. **Tune batch size**: Maximize `--batch_size` per GPU to improve throughput
-3. **Use Flash Attention**: Ensure Flash Attention is available for faster attention
-4. **Gradient checkpointing**: Implement in `tinytron/model/gpt.py` for larger models
-5. **Mixed precision**: BFloat16 is enabled by default (better than FP16 for training)
+3. **Run auto-tune first**: Use `bash scripts/autotune.sh` to quickly find strong `SEP_SIZE` + `BATCH_SIZE` settings
+4. **Use Flash Attention**: Ensure Flash Attention is available for faster attention
+5. **Gradient checkpointing**: Implement in `tinytron/model/gpt.py` for larger models
+6. **Mixed precision**: BFloat16 is enabled by default (better than FP16 for training)
 
 ## Common Issues
 
