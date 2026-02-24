@@ -22,6 +22,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from tinytron.training.config import Config
 from tinytron.model import GPT
 from tinytron.model.gpt import EXPERT_LOCAL_PARAM_SUFFIXES
+import tinytron.optim
 from tinytron.distributed import (
     DistributedOptimizer,
     parallel_state,
@@ -193,13 +194,44 @@ class Trainer:
         self.raw_model = self.model.module
 
     def _init_optimizer(self, config: Config):
-        self.optimizer = torch.optim.AdamW(
-            self.raw_model.parameters(), 
-            lr=config.optim.max_lr,
-            weight_decay=config.optim.weight_decay,
-            betas=(config.optim.adam_beta1, config.optim.adam_beta2),
-            eps=config.optim.adam_eps,
-        )
+        if config.optim.optimizer == "adam":
+            self.optimizer = tinytron.optim.AdamW(
+                self.raw_model.parameters(), 
+                lr=config.optim.max_lr,
+                weight_decay=config.optim.weight_decay,
+                betas=(config.optim.adam_beta1, config.optim.adam_beta2),
+                eps=config.optim.adam_eps,
+            )
+        elif config.optim.optimizer == "muon":
+            muon_params = []
+            adam_params = []
+            for name, param in self.raw_model.named_parameters():
+                if not param.requires_grad:
+                    continue
+                if param.ndim == 2 and "wte" not in name and "lm_head" not in name:
+                    muon_params.append(param)
+                else:
+                    adam_params.append(param)
+            param_groups = [
+                {
+                    "params": muon_params,
+                    "use_muon": True,
+                    "use_adam": False,
+                    "lr": config.optim.max_lr,
+                    "momentum": config.optim.muon_momentum,
+                    "weight_decay": config.optim.weight_decay,
+                },
+                {
+                    "params": adam_params,
+                    "use_muon": False,
+                    "use_adam": True,
+                    "lr": config.optim.max_lr,
+                    "betas": (config.optim.adam_beta1, config.optim.adam_beta2),
+                    "eps": config.optim.adam_eps,
+                    "weight_decay": config.optim.weight_decay,
+                }
+            ]
+            self.optimizer = tinytron.optim.Muon(param_groups)
         if config.parallel.use_distributed_optimizer:
             self.optimizer = DistributedOptimizer(
                 optimizer=self.optimizer,
@@ -321,7 +353,7 @@ class Trainer:
             sp_world_size=self.sp_world_size,
             expert_local_param_suffixes=EXPERT_LOCAL_PARAM_SUFFIXES,
         )
-        norm = clip_grad_norm_moe(self.model, config.train.grad_clip_value, EXPERT_LOCAL_PARAM_SUFFIXES)
+        norm = self.raw_model.clip_grad_norm(config.train.grad_clip_value)
         lr = self._lr_scheduler(step, self.training_info["max_steps"], config.optim.warmup_steps, config.optim.max_lr, config.optim.min_lr)
         for param_group in self.optimizer.param_groups:
             param_group['lr'] = lr

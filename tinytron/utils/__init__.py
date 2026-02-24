@@ -1,8 +1,6 @@
 from .training import (
     get_training_info, 
     set_seed,
-    torch_version_ge, 
-    sm_ge,
 )
 from .model import (
     get_model_params, 

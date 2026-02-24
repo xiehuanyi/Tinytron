@@ -9,62 +9,56 @@ from tinytron.distributed import (
 )
 
 
-def rope_impl(q: torch.Tensor, k: torch.Tensor, position_ids: torch.Tensor, rope_theta: float = 10000.0) -> tuple[torch.Tensor, torch.Tensor]:
+def rope_impl(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    position_ids: torch.Tensor,
+    rope_theta: float = 10000.0,
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
-    Shared RoPE (Rotary Positional Embedding) implementation for Qwen3 family models.
-    Supports both single and batched position_ids
+    HF Llama/Qwen-style RoPE:
+    - rotate_half uses half-split layout
+    - cos/sin are built from emb = cat(freqs, freqs)
+    q, k: [B, H, T, D]
+    position_ids: [T] or [B, T]
     """
-    batch_size, num_heads, seq_len, head_dim = q.shape
-    
-    # Create frequency tensor
-    inv_freq = 1.0 / (rope_theta ** (torch.arange(0, head_dim, 2, dtype=torch.float32, device=q.device) / head_dim))
-    
-    # Handle position_ids - support both single batch and multi-batch scenarios
-    if position_ids.dim() > 1 and position_ids.shape[0] > 1:
-        # Multi-batch case: handle each batch separately
-        freqs = []
-        for i in range(batch_size):
-            if i < position_ids.shape[0]:
-                batch_freqs = torch.outer(position_ids[i].float(), inv_freq)
-            else:
-                # Use first batch if not enough position_ids
-                batch_freqs = torch.outer(position_ids[0].float(), inv_freq)
-            freqs.append(batch_freqs)
-        freqs = torch.stack(freqs, dim=0)  # [batch_size, seq_len, head_dim//2]
-        
-        # Create cos and sin - repeat to match full head_dim
-        cos = torch.cos(freqs).unsqueeze(1).repeat(1, 1, 1, 2)  # [batch_size, 1, seq_len, head_dim]
-        sin = torch.sin(freqs).unsqueeze(1).repeat(1, 1, 1, 2)  # [batch_size, 1, seq_len, head_dim]
+    B, H, T, D = q.shape
+    assert D % 2 == 0, f"head_dim must be even for RoPE, got {D}"
+
+    # inv_freq: [D/2]
+    inv_freq = 1.0 / (
+        rope_theta ** (torch.arange(0, D, 2, dtype=torch.float32, device=q.device) / D)
+    )
+
+    # position_ids -> [B, T]
+    if position_ids.dim() == 1:
+        position_ids = position_ids.unsqueeze(0).expand(B, -1)
+    elif position_ids.dim() == 2:
+        if position_ids.size(0) == 1 and B > 1:
+            position_ids = position_ids.expand(B, -1)
+        elif position_ids.size(0) != B:
+            raise ValueError(f"position_ids batch mismatch: got {position_ids.shape}, expected batch={B}")
     else:
-        # Single batch case - take the first sequence if batched
-        if position_ids.dim() > 1:
-            t = position_ids[0].float()  # [seq_len] - use first batch
-        else:
-            t = position_ids.float()     # [seq_len]
-        
-        # Create position encodings
-        freqs = torch.outer(t, inv_freq)    # [seq_len, head_dim//2]
-        
-        # Duplicate to create full cos/sin tensors
-        cos = freqs.cos()  # [seq_len, head_dim//2]
-        sin = freqs.sin()  # [seq_len, head_dim//2]
-        
-        # Expand to full head_dim by repeating each element
-        cos = torch.stack([cos, cos], dim=-1).flatten(-2)  # [seq_len, head_dim]
-        sin = torch.stack([sin, sin], dim=-1).flatten(-2)  # [seq_len, head_dim]
-        
-        # Reshape to match q and k dimensions: [1, 1, seq_len, head_dim]
-        cos = cos.unsqueeze(0).unsqueeze(0)
-        sin = sin.unsqueeze(0).unsqueeze(0)
-    
-    # Apply rotation
-    def rotate_half(x):
-        x1, x2 = x[..., :x.shape[-1]//2], x[..., x.shape[-1]//2:]
+        raise ValueError(f"position_ids must be [T] or [B,T], got shape={position_ids.shape}")
+
+    # freqs: [B, T, D/2]
+    freqs = torch.einsum("bt,d->btd", position_ids.float(), inv_freq)
+
+    # HF style: duplicate by concatenation (half-split compatible)
+    # emb: [B, T, D]
+    emb = torch.cat((freqs, freqs), dim=-1)
+
+    # cos/sin: [B, 1, T, D] for broadcasting over heads
+    cos = emb.cos().unsqueeze(1).to(dtype=q.dtype)
+    sin = emb.sin().unsqueeze(1).to(dtype=q.dtype)
+
+    def rotate_half(x: torch.Tensor) -> torch.Tensor:
+        x1 = x[..., : x.shape[-1] // 2]
+        x2 = x[..., x.shape[-1] // 2 :]
         return torch.cat((-x2, x1), dim=-1)
-    
+
     q_embed = (q * cos) + (rotate_half(q) * sin)
     k_embed = (k * cos) + (rotate_half(k) * sin)
-    
     return q_embed, k_embed
 
 
@@ -133,7 +127,6 @@ class Attention(nn.Module):
         q = q.view(B, T_local, self.num_attention_heads, self.head_dim).transpose(-2, -3) # (B, nh, T, hs)
         k = k.view(B, T_local, self.num_key_value_heads, self.head_dim).transpose(-2, -3) # (B, nh, T, hs)
         v = v.view(B, T_local, self.num_key_value_heads, self.head_dim).transpose(-2, -3) # (B, nh, T, hs)
-        k, v = gqa_impl(k, v, self.num_key_value_heads, self.num_attention_heads)
         start_pos = sp_rank * T_local
         end_pos = start_pos + T_local
         if self.pos is None or self.pos.size(1) != T_local or self.pos[0, 0] != start_pos:
@@ -143,18 +136,39 @@ class Attention(nn.Module):
         H = self.num_attention_heads
         if sp_size > 1:
             # sp all to all
-            assert H % sp_size == 0
+            assert H % sp_size == 0, f"Attention heads ({H}) must be divisible by sp_size ({sp_size})"
             H_local = H // sp_size
-            qkv = torch.stack([q, k, v], dim=0)
-            qkv = qkv.reshape(3, B, sp_size, H_local, T_local, self.head_dim)
-            qkv = qkv.permute(2, 1, 0, 3, 4, 5).contiguous()    # [sp, B, 3, H_local, T_local, D]
-            qkv = ulysses_all_to_all(qkv, sp_group)
-            qkv = qkv.permute(2, 1, 3, 0, 4, 5).contiguous()    # [3, B, H_local, sp, T_local, D]
             T_full = sp_size * T_local
-            qkv = qkv.view(3, B, H_local, T_full, self.head_dim)
-            q_local, k_local, v_local = qkv[0], qkv[1], qkv[2]
+            if self.num_key_value_heads % sp_size == 0:
+                H_kv_local = self.num_key_value_heads // sp_size
+                q = q.view(B, sp_size, H_local, T_local, self.head_dim)
+                q = q.permute(1, 0, 2, 3, 4).contiguous()   # [sp, B, H_local, T_local, D]
+                q = ulysses_all_to_all(q, sp_group)
+                q = q.permute(1, 2, 0, 3, 4).contiguous()   # [B, H_local, sp, T_local, D]
+                q_local = q.view(B, H_local, T_full, self.head_dim)
+
+                kv = torch.stack([k, v], dim=0)
+                kv = kv.view(2, B, sp_size, H_kv_local, T_local, self.head_dim)
+                kv = kv.permute(2, 0, 1, 3, 4, 5).contiguous()  # [sp, 2, B, H_kv_local, T_local, D]
+                kv = ulysses_all_to_all(kv, sp_group)
+                kv = kv.permute(1, 2, 3, 0, 4, 5).contiguous()  # [2, B, H_kv_local, sp, T_local, D]
+                kv = kv.view(2, B, H_kv_local, T_full, self.head_dim)
+                k_local, v_local = kv[0], kv[1]
+                k_local, v_local = gqa_impl(k_local, v_local, H_kv_local, H_local)
+            else:
+                k, v = gqa_impl(k, v, self.num_key_value_heads, H)
+                qkv = torch.stack([q, k, v], dim=0)
+                qkv = qkv.view(3, B, sp_size, H_local, T_local, self.head_dim)
+                qkv = qkv.permute(2, 0, 1, 3, 4, 5).contiguous()  # [sp, 3, B, H_local, T_local, D]
+                qkv = ulysses_all_to_all(qkv, sp_group)
+                qkv = qkv.permute(1, 2, 3, 0, 4, 5).contiguous()  # [3, B, H_local, sp, T_local, D]
+                qkv = qkv.view(3, B, H_local, T_full, self.head_dim)
+                q_local, k_local, v_local = qkv[0], qkv[1], qkv[2]
         else:
+            H_local = H
+            H_kv_local = self.num_key_value_heads
             q_local, k_local, v_local = q, k, v
+            k_local, v_local = gqa_impl(k_local, v_local, H_kv_local, H_local)
 
         # local attention computation
         dropout_p = self.dropout if self.training else 0.0

@@ -78,6 +78,8 @@ class DataConfig:
 
 @dataclass(frozen=True)
 class OptimConfig:
+    optimizer: str = "adam"
+
     max_lr: float = 4e-3
     min_lr: float = 3e-5
     warmup_steps: int = 1000
@@ -86,6 +88,8 @@ class OptimConfig:
     adam_beta1: float = 0.9
     adam_beta2: float = 0.95
     adam_eps: float = 1e-8
+
+    muon_momentum: float = 0.95
 
 @dataclass(frozen=True)
 class CheckpointConfig:

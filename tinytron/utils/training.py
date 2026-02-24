@@ -87,12 +87,3 @@ def set_seed(seed: int, deterministic: bool = False):
     # ^^ safe to call this function even if cuda is not available
     if deterministic:
         torch.use_deterministic_algorithms(True)
-
-
-def torch_version_ge(torch_version: str = "2.10") -> bool:
-    v = torch.__version__.split("+")[0]
-    return version.parse(v) > version.parse(torch_version)
-
-def sm_ge(device: torch.device | None = None, sm: int = 80) -> bool:
-    major, minor = torch.cuda.get_device_capability(device)
-    return major >= sm/10   # SM80+  => major=8 (A100), 9 (H100), etc.

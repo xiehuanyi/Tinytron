@@ -1,6 +1,6 @@
 # Tinytron
 
-A minimal, hackable pre-training stack for GPT-style language models. This project provides a clean, production-ready foundation for training large-scale transformer models from scratch with distributed training support.
+A minimal, hackable pre-training stack for GPT-style language models. This project provides a clean foundation for training transformer models from scratch with distributed training support.
 
 ## Features
 
@@ -11,7 +11,7 @@ A minimal, hackable pre-training stack for GPT-style language models. This proje
   - Flash Attention optimization support
   
 - **Distributed Training**:
-  - ZeRO-1 optimizer state partitioning for memory efficiency
+  - ZeRO-1 optimizer state partitioning for memory efficiency (Native support for Muon)
   - DistributedDataParallel (DDP) for multi-GPU training
   - Sequence-Expert joint parallelism via `SEP_SIZE` / `--sep_size` (SEP)
   - Gradient accumulation for large effective batch sizes
@@ -25,6 +25,7 @@ A minimal, hackable pre-training stack for GPT-style language models. This proje
 - **Developer-Friendly**:
   - Comprehensive profiling utilities
   - Model FLOPs Utilization (MFU) tracking
+  - Auto-tune script for fast throughput search (`scripts/autotune.sh`)
   - Mock data mode for rapid debugging
   - Minimal dependencies
 
@@ -66,14 +67,13 @@ A minimal, hackable pre-training stack for GPT-style language models. This proje
 │       └── profile.py                      # Profiling and MFU computation
 │
 ├── scripts/                                # Launch scripts
+│   ├── autotune.sh                         # Auto-tune SEP_SIZE/BATCH_SIZE by tok/sec
 │   ├── debug_gpt_0.25b/
 │   │   └── pretrain.sh                     # 0.25B debug (pretrain_debug.py)
 │   ├── debug_gpt_0.3b_a0.17b/
 │   │   └── pretrain.sh                     # 0.3B MoE debug (pretrain_debug.py)
 │   ├── example_gpt_0.25b/
 │   │   └── pretrain.sh                     # 0.25B example with custom data (pretrain_example.py)
-│   └── gpt_3b/
-│       └── pretrain.sh
 │
 ├── pretrain_debug.py                       # Debug entry (mock data, minimal deps)
 ├── pretrain_example.py                     # Example entry (custom dataset / tokenizer)
@@ -151,6 +151,37 @@ When running under some distributed training platforms, You do not need to speci
 
 Use the example entry point and override `_init_dataset`: see `pretrain_example.py` for a subclass that uses a real dataset and tokenizer. The base implementation (mock data) lives in `tinytron/training/trainer.py`; override it in your entry script or subclass `Trainer` and pass your dataset there.
 
+### 4. Auto-Tune Throughput (`tok/sec`)
+
+The repository includes an auto-tuner at `scripts/autotune.sh` to search throughput-friendly combinations of `SEP_SIZE` and `BATCH_SIZE`.
+
+Default search space:
+- `SEP_SIZES="1 2 4 8"`
+- `BATCH_SIZES="1 2 4 8 16 32"`
+- `RUN_SCRIPT="scripts/debug_gpt_0.25b/pretrain.sh"`
+
+Run with defaults:
+
+```bash
+bash scripts/autotune.sh
+```
+
+Run with custom search space and target script:
+
+```bash
+SEP_SIZES="1 2 4" \
+BATCH_SIZES="4 8 16" \
+TARGET_STEPS=80 \
+WARMUP_STEPS=20 \
+RUN_SCRIPT="scripts/debug_gpt_0.3b_a0.17b/pretrain.sh" \
+bash scripts/autotune.sh
+```
+
+Outputs:
+- Summary CSV: `autotune_results.csv`
+- Temporary log (auto-cleaned): `autotune_temp.log`
+- Best config printed at the end as `SEP_SIZE=<...>, BATCH_SIZE=<...>`
+
 ## Configuration
 
 Configuration is built from CLI arguments via `tinytron/training/arguments.py` and assembled into a unified `Config` in `tinytron/training/config.py`.
@@ -168,7 +199,7 @@ class ModelConfig:
     hidden_size: int = 1024             # Hidden dimension
     intermediate_size: int = 4096       # FFN intermediate size
     dropout: float = 0.0                # Dropout rate
-    tied_lm_head: bool = True           # Tie input/output embeddings
+    tied_lm_head: bool = False          # Tie input/output embeddings (enable via --tied_lm_head)
 
     # Mixture of Experts (optional)
     use_moe: bool = False               # Enable MoE
@@ -192,7 +223,14 @@ Key CLI options (see `tinytron/training/arguments.py` for full list):
 | `--grad_clip_value` | `1.0` | Gradient clipping |
 | `--warmup_steps` | `1000` | LR warmup steps |
 | `--max_epochs` | `1` | Training epochs |
+| `--do_save` | `False` | Enable checkpoint saving |
 | `--save_every_steps` | `5000` | Checkpoint frequency |
+| `--do_val` | `False` | Enable validation during training |
+| `--val_every_steps` | `250` | Validation frequency (when `--do_val` is enabled) |
+| `--optimizer` | `adam` | Optimizer type (`adam` / `muon`) |
+| `--use_distributed_optimizer` | `False` | Enable ZeRO-1-style optimizer sharding |
+| `--pin_memory` | `False` | Enable DataLoader pinned memory |
+| `--tied_lm_head` | `False` | Tie token embedding and LM head weights |
 | `--use_compile` | flag | PyTorch 2.0 compilation |
 
 ### Parallelism Configuration
@@ -200,7 +238,7 @@ Key CLI options (see `tinytron/training/arguments.py` for full list):
 `sep_size` controls SEP group size (sequence-expert joint parallelism).
 
 - CLI flag: `--sep_size` (default: `8` in `tinytron/training/arguments.py`)
-- Script env var: `SEP_SIZE` (mapped to `--sep_size`)
+- Script env var: `SEP_SIZE` (mapped to `--sep_size`, script default is `1`)
 - Dense models (`--use_moe` disabled): SEP degenerates to pure SP.
 - Constraints:
   - `WORLD_SIZE % sep_size == 0`
@@ -218,14 +256,20 @@ torchrun --nproc_per_node=8 pretrain_debug.py \
 
 ## Training Features
 
-### Automatic Checkpoint Resumption
+### Checkpoint Saving and Resumption
 
-The trainer automatically saves and resumes from checkpoints, preserving:
+Checkpoint saving is disabled by default. Enable it with:
+
+```bash
+--do_save --save_every_steps 5000
+```
+
+When enabled, the trainer can save and resume checkpoints, preserving:
 - Model weights (`*_model.pt`)
 - Optimizer states (`*_opt/` directory)
 - Training metadata (`*_meta.pt`): step counter, RNG state, dataloader position
 
-Simply restart the training command to resume from the latest checkpoint.
+To resume, restart the same training command. The trainer searches checkpoints under the current experiment `log_dir` by default, or you can specify `--resume_path` explicitly.
 
 ### ZeRO-1 Optimizer
 
@@ -233,6 +277,18 @@ Memory-efficient optimizer state partitioning:
 - Optimizer states are sharded across GPUs
 - Model parameters remain replicated
 - Automatic gradient synchronization and parameter broadcasting
+
+Enable it with:
+
+```bash
+--use_distributed_optimizer
+```
+
+Native support for Muon + ZeRO-1 is also available:
+
+```bash
+--optimizer muon --use_distributed_optimizer
+```
 
 ### Gradient Accumulation
 
@@ -246,6 +302,16 @@ grad_accum_steps = total_batch_size / (batch_size × seq_len × num_dp_ranks)
 Implements cosine annealing with linear warmup:
 1. Linear warmup: 0 → max_lr over `warmup_steps`
 2. Cosine decay: max_lr → min_lr over remaining steps
+
+### Validation
+
+Validation is optional and disabled by default.
+
+```bash
+--do_val --val_every_steps 250
+```
+
+When enabled, validation runs every `val_every_steps` and on the last step (unless `--debug` is set).
 
 ### Model FLOPs Utilization (MFU)
 
@@ -261,10 +327,10 @@ Enable PyTorch profiler for performance analysis:
 ```bash
 python pretrain_debug.py \
   --use_profiler \
-  --steps_to_profile 15 20
+  --steps_to_profile 15 20  # profile on step 15 to 20
 ```
 
-This generates a Chrome trace file at `<log_dir>/rank0_trace.json` that can be viewed in `chrome://tracing`.
+This generates a Chrome trace file at `<log_dir>/rank{rank}_trace.json` (for the exporting process) that can be viewed in `chrome://tracing`.
 
 ## Example Model Configurations
 
@@ -328,7 +394,7 @@ def _init_optimizer(self, config: Config):
 
 Training logs are saved to:
 ```
-<log_dir>/<exp_name>_<config_hash>/log.txt
+<log_dir>/<exp_name>_modelsize_<...>_lr<...>_BS<...>_SL<...>_DP<...>_SEP<...>/log.txt
 ```
 
 Log format:
@@ -348,9 +414,10 @@ Example:
 
 1. **Enable compilation**: Add `--use_compile` for PyTorch 2.0+ (20-30% speedup)
 2. **Tune batch size**: Maximize `--batch_size` per GPU to improve throughput
-3. **Use Flash Attention**: Ensure Flash Attention is available for faster attention
-4. **Gradient checkpointing**: Implement in `tinytron/model/gpt.py` for larger models
-5. **Mixed precision**: BFloat16 is enabled by default (better than FP16 for training)
+3. **Run auto-tune first**: Use `bash scripts/autotune.sh` to quickly find strong `SEP_SIZE` + `BATCH_SIZE` settings
+4. **Use Flash Attention**: Ensure Flash Attention is available for faster attention
+5. **Gradient checkpointing**: Implement in `tinytron/model/gpt.py` for larger models
+6. **Mixed precision**: BFloat16 is enabled by default (better than FP16 for training)
 
 ## Common Issues
 
@@ -360,8 +427,9 @@ Example:
 - Use larger `grad_accum_steps` by reducing `--batch_size`
 
 ### Slow Training
-- Ensure Flash Attention is installed
+- Ensure your PyTorch/CUDA build supports optimized SDPA kernels
 - Enable `--use_compile`
+- For MoE, prefer grouped GEMM kernels as much as possible
 - Check MFU percentage (should be >30% for efficient training)
 - Increase `--batch_size` to better utilize GPU
 
@@ -374,11 +442,11 @@ Example:
 If you use this code in your research, please cite:
 
 ```bibtex
-@software{train_large_model_from_scratch,
-  title = {Train Large Model from Scratch},
+@software{tinytron,
+  title = {Tinytron},
   author = {Liangyu Wang},
-  year = {2025},
-  url = {https://github.com/liangyuwang/train-large-model-from-scratch}
+  year = {2026},
+  url = {https://github.com/liangyuwang/Tinytron}
 }
 ```
 
