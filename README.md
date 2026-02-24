@@ -149,6 +149,37 @@ When running under some distributed training platforms, You do not need to speci
 
 Use the example entry point and override `_init_dataset`: see `pretrain_example.py` for a subclass that uses a real dataset and tokenizer. The base implementation (mock data) lives in `tinytron/training/trainer.py`; override it in your entry script or subclass `Trainer` and pass your dataset there.
 
+### 4. Auto-Tune Throughput (`tok/sec`)
+
+The repository includes an auto-tuner at `scripts/autotune.sh` to search throughput-friendly combinations of `SEP_SIZE` and `BATCH_SIZE`.
+
+Default search space:
+- `SEP_SIZES="1 2 4 8"`
+- `BATCH_SIZES="1 2 4 8 16 32"`
+- `RUN_SCRIPT="scripts/debug_gpt_0.25b/pretrain.sh"`
+
+Run with defaults:
+
+```bash
+bash scripts/autotune.sh
+```
+
+Run with custom search space and target script:
+
+```bash
+SEP_SIZES="1 2 4" \
+BATCH_SIZES="4 8 16" \
+TARGET_STEPS=80 \
+WARMUP_STEPS=20 \
+RUN_SCRIPT="scripts/debug_gpt_0.3b_a0.17b/pretrain.sh" \
+bash scripts/autotune.sh
+```
+
+Outputs:
+- Summary CSV: `autotune_results.csv`
+- Temporary log (auto-cleaned): `autotune_temp.log`
+- Best config printed at the end as `SEP_SIZE=<...>, BATCH_SIZE=<...>`
+
 ## Configuration
 
 Configuration is built from CLI arguments via `tinytron/training/arguments.py` and assembled into a unified `Config` in `tinytron/training/config.py`.
@@ -408,11 +439,11 @@ Example:
 If you use this code in your research, please cite:
 
 ```bibtex
-@software{train_large_model_from_scratch,
-  title = {Train Large Model from Scratch},
+@software{tinytron,
+  title = {Tinytron},
   author = {Liangyu Wang},
-  year = {2025},
-  url = {https://github.com/liangyuwang/train-large-model-from-scratch}
+  year = {2026},
+  url = {https://github.com/liangyuwang/Tinytron}
 }
 ```
 
